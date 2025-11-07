@@ -281,7 +281,7 @@ class EmotionAnalyzer:
         }
 
 
-@register("EmotionAI", "天各一方", "高级情感智能交互系统", "1.1.2")
+@register("EmotionAI", "天各一方", "高级情感智能交互系统", "1.1.3")
 class EmotionAIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -453,8 +453,8 @@ class EmotionAIPlugin(Star):
         current_state.interaction_count += 1
         current_state.last_interaction = time.time()
         
-        # 判断互动性质
-        if any(emotion_updates.values()):
+        # 判断互动性质 - 修复：只有当有情感更新时才判断互动性质
+        if emotion_updates:
             # 如果有情感更新，根据更新的情感判断互动性质
             positive_emotions = sum([
                 emotion_updates.get('joy', 0),
@@ -596,7 +596,7 @@ class EmotionAIPlugin(Star):
         
     @filter.command("设置好感")
     async def admin_set_favor(self, event: AstrMessageEvent, user_id: str, value: str):
-        """设置好感度"""
+        """设置好感度 - 修复：操作全局状态"""
         if not self._is_admin(event):
             yield event.plain_result("错误：需要管理员权限")
             return
@@ -610,7 +610,8 @@ class EmotionAIPlugin(Star):
             yield event.plain_result("错误：好感度值必须是数字")
             return
             
-        session_id = self._get_session_id(event)
+        # 修复：管理员命令操作全局状态，session_id 设为 None
+        session_id = None
         state = self.manager.get_user_state(user_id, session_id)
         state.favor = favor_value
         
@@ -623,12 +624,13 @@ class EmotionAIPlugin(Star):
         
     @filter.command("重置好感")
     async def admin_reset_favor(self, event: AstrMessageEvent, user_id: str):
-        """重置用户好感度状态"""
+        """重置用户好感度状态 - 修复：操作全局状态"""
         if not self._is_admin(event):
             yield event.plain_result("错误：需要管理员权限")
             return
             
-        session_id = self._get_session_id(event)
+        # 修复：管理员命令操作全局状态，session_id 设为 None
+        session_id = None
         
         # 创建一个全新的默认状态
         new_state = EmotionalState()
