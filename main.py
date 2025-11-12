@@ -554,47 +554,64 @@ class UserCommandHandler:
     def __init__(self, plugin):
         self.plugin = plugin
     
+    async def _check_and_handle_blacklist(self, event: AstrMessageEvent):
+        """检查并处理黑名单用户"""
+        user_key = self.plugin._get_user_key(event)
+        if await self.plugin.blacklist_manager.is_user_blacklisted(user_key):
+            yield event.plain_result("【黑名单】您已加入黑名单，只有管理员重置好感才可以移出黑名单。")
+            event.stop_event()
+            return  # 修复：移除返回值
+    
     async def show_emotional_state(self, event: AstrMessageEvent):
         """显示情感状态"""
-        user_key = self.plugin._get_user_key(event)
-        
-        if await self.plugin.blacklist_manager.is_user_blacklisted(user_key):
-            yield event.plain_result("【黑名单】您已加入黑名单，只有重置好感才可以移出黑名单。")
+        # 检查黑名单
+        async for result in self._check_and_handle_blacklist(event):
+            yield result
             return
-            
+        
+        user_key = self.plugin._get_user_key(event)
         state = await self.plugin.user_manager.get_user_state(user_key)
         response_text = self.plugin._format_emotional_state(state)
         yield event.plain_result(response_text)
+        event.stop_event()
     
     async def toggle_status_display(self, event: AstrMessageEvent):
         """切换状态显示开关"""
-        user_key = self.plugin._get_user_key(event)
-        
-        if await self.plugin.blacklist_manager.is_user_blacklisted(user_key):
-            yield event.plain_result("【黑名单】您已加入黑名单，只有重置好感才可以移出黑名单。")
+        # 检查黑名单
+        async for result in self._check_and_handle_blacklist(event):
+            yield result
             return
-            
+        
+        user_key = self.plugin._get_user_key(event)
         state = await self.plugin.user_manager.get_user_state(user_key)
         state.show_status = not state.show_status
         await self.plugin.user_manager.update_user_state(user_key, state)
         
         status_text = "开启" if state.show_status else "关闭"
         yield event.plain_result(f"【状态显示】已{status_text}状态显示")
+        event.stop_event()
     
     async def show_favor_ranking(self, event: AstrMessageEvent, num: str = "10"):
         """显示好感度排行榜"""
+        # 检查黑名单
+        async for result in self._check_and_handle_blacklist(event):
+            yield result
+            return
+        
         try:
             limit = min(int(num), 20)
             if limit <= 0:
                 raise ValueError
         except ValueError:
             yield event.plain_result("【错误】排行数量必须是一个正整数（最大20）。")
+            event.stop_event()
             return
 
         rankings = await self.plugin.ranking_manager.get_average_ranking(limit, True)
         
         if not rankings:
             yield event.plain_result("【排行榜】当前没有任何用户数据。")
+            event.stop_event()
             return
 
         response_lines = [f"【好感度平均值 TOP {limit} 排行榜】", "=================="]
@@ -616,21 +633,29 @@ class UserCommandHandler:
         ])
         
         yield event.plain_result("\n".join(response_lines))
+        event.stop_event()
     
     async def show_negative_favor_ranking(self, event: AstrMessageEvent, num: str = "10"):
         """显示负好感排行榜"""
+        # 检查黑名单
+        async for result in self._check_and_handle_blacklist(event):
+            yield result
+            return
+        
         try:
             limit = min(int(num), 20)
             if limit <= 0:
                 raise ValueError
         except ValueError:
             yield event.plain_result("【错误】排行数量必须是一个正整数（最大20）。")
+            event.stop_event()
             return
 
         rankings = await self.plugin.ranking_manager.get_average_ranking(limit, False)
         
         if not rankings:
             yield event.plain_result("【排行榜】当前没有任何用户数据。")
+            event.stop_event()
             return
 
         response_lines = [f"【好感度平均值 BOTTOM {limit} 排行榜】", "=================="]
@@ -642,9 +667,15 @@ class UserCommandHandler:
             response_lines.append(line)
         
         yield event.plain_result("\n".join(response_lines))
+        event.stop_event()
     
     async def analyze_emotion(self, event: AstrMessageEvent, text: str = ""):
         """分析文本情感"""
+        # 检查黑名单
+        async for result in self._check_and_handle_blacklist(event):
+            yield result
+            return
+        
         if not text:
             # 使用上一条消息
             text = event.message_str
@@ -665,6 +696,7 @@ class UserCommandHandler:
         ]
         
         yield event.plain_result("\n".join(response))
+        event.stop_event()
 
 
 class AdminCommandHandler:
@@ -695,20 +727,24 @@ class AdminCommandHandler:
         """设置好感度 - 适配session_based模式"""
         if not self.plugin._is_admin(event):
             yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
             return
             
         # 跨平台兼容的用户ID验证
         if not user_input or not user_input.strip():
             yield event.plain_result("【错误】用户标识符不能为空")
+            event.stop_event()
             return
             
         try:
             favor_value = int(value)
             if not self.plugin.favour_min <= favor_value <= self.plugin.favour_max:
                 yield event.plain_result(f"【错误】好感度值必须在 {self.plugin.favour_min} 到 {self.plugin.favour_max} 之间。")
+                event.stop_event()
                 return
         except ValueError:
             yield event.plain_result("【错误】好感度值必须是数字")
+            event.stop_event()
             return
             
         # 解析用户标识符
@@ -730,15 +766,18 @@ class AdminCommandHandler:
         
         mode_info = "（会话模式）" if self.plugin.session_based else ""
         yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的好感度已设置为 {favor_value}")
+        event.stop_event()
     
     async def reset_favor(self, event: AstrMessageEvent, user_input: str):
         """重置用户好感度状态 - 适配session_based模式"""
         if not self.plugin._is_admin(event):
             yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
             return
             
         if not user_input or not user_input.strip():
             yield event.plain_result("【错误】用户标识符不能为空")
+            event.stop_event()
             return
             
         # 解析用户标识符
@@ -756,11 +795,13 @@ class AdminCommandHandler:
         mode_info = "（会话模式）" if self.plugin.session_based else ""
         action_text = "并移出黑名单" if removed else ""
         yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的好感度状态已完全重置{action_text}")
+        event.stop_event()
     
     async def reset_plugin(self, event: AstrMessageEvent):
         """重置插件所有数据"""
         if not self.plugin._is_admin(event):
             yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
             return
             
         # 重置所有数据
@@ -771,11 +812,13 @@ class AdminCommandHandler:
         logger.info("管理员执行了插件重置操作")
         
         yield event.plain_result("【成功】插件所有数据已重置，包括用户情感状态和黑名单")
+        event.stop_event()
     
     async def blacklist_stats(self, event: AstrMessageEvent):
         """显示黑名单统计"""
         if not self.plugin._is_admin(event):
             yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
             return
             
         # 获取详细黑名单信息
@@ -784,6 +827,7 @@ class AdminCommandHandler:
         
         if not blacklist_details:
             yield event.plain_result("【黑名单统计】当前黑名单为空")
+            event.stop_event()
             return
         
         response_lines = [
@@ -814,15 +858,18 @@ class AdminCommandHandler:
             response_lines.append(f"  {reason}: {count}次")
             
         yield event.plain_result("\n".join(response_lines))
+        event.stop_event()
     
     async def view_favor(self, event: AstrMessageEvent, user_input: str):
         """管理员查看指定用户的好感状态 - 适配session_based模式"""
         if not self.plugin._is_admin(event):
             yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
             return
             
         if not user_input or not user_input.strip():
             yield event.plain_result("【错误】用户标识符不能为空")
+            event.stop_event()
             return
         
         # 解析用户标识符
@@ -855,18 +902,22 @@ class AdminCommandHandler:
             response_lines.append("【提示】使用 /重置好感 命令可以移出黑名单")
         
         yield event.plain_result("\n".join(response_lines))
+        event.stop_event()
     
     async def backup_data(self, event: AstrMessageEvent):
         """备份插件数据"""
         if not self.plugin._is_admin(event):
             yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
             return
             
         try:
             backup_path = self.plugin._create_backup()
             yield event.plain_result(f"【成功】数据备份成功: {backup_path}")
+            event.stop_event()
         except Exception as e:
             yield event.plain_result(f"【错误】备份失败: {str(e)}")
+            event.stop_event()
 
 
 # ==================== 主插件类 ====================
@@ -904,7 +955,7 @@ class EmotionAIPlugin(Star):
         # 自动保存任务
         self.auto_save_task = asyncio.create_task(self._auto_save_loop())
         
-        logger.info("EmotionAI 插件初始化完成 - 修复并发安全问题版本")
+        logger.info("EmotionAI 插件初始化完成 - 修复黑名单拦截版本")
         
     def _validate_and_init_config(self):
         """验证配置并初始化配置参数"""
@@ -1040,19 +1091,48 @@ class EmotionAIPlugin(Star):
         else:
             return "稀少互动"
     
-    # ==================== 修复的黑名单拦截 ====================
+    # ==================== 修复：全局黑名单拦截器 ====================
     
-    @filter.on_llm_request()
+    @filter.on_message(priority=999)
+    async def global_blacklist_interceptor(self, event: AstrMessageEvent):
+        """全局黑名单拦截器 - 最高优先级确保最先执行"""
+        user_key = self._get_user_key(event)
+        
+        # 检查用户是否在黑名单中
+        if await self.blacklist_manager.is_user_blacklisted(user_key):
+            logger.info(f"全局拦截器：用户 {user_key} 在黑名单中，拦截消息")
+            
+            # 检查是否是@机器人或者是命令
+            message_text = event.message_str.strip()
+            is_wake_command = event.is_at_or_wake_command
+            is_plugin_command = any(message_text.startswith(cmd) for cmd in 
+                                  ['/好感度', '/状态显示', '/好感排行', '/负好感排行', 
+                                   '/情感分析', '/缓存统计', '/设置好感', '/重置好感', 
+                                   '/重置插件', '/黑名单统计', '/查看好感', '/备份数据'])
+            
+            if is_wake_command or is_plugin_command:
+                # 直接发送黑名单消息并停止所有后续处理
+                yield event.plain_result("【黑名单】您已加入黑名单，只有管理员重置好感才可以移出黑名单。")
+                event.stop_event()
+                return
+    
+    # ==================== 修复的LLM请求拦截 ====================
+    
+    @filter.on_llm_request(priority=999)
     async def inject_emotional_context(self, event: AstrMessageEvent, req: ProviderRequest):
         """注入情感上下文 - 修复黑名单拦截"""
         user_key = self._get_user_key(event)
         
         # 检查用户是否在黑名单中 - 直接拦截请求
         if await self.blacklist_manager.is_user_blacklisted(user_key):
+            logger.info(f"LLM拦截器：用户 {user_key} 在黑名单中，已拦截LLM请求")
+            
             # 完全清空原有提示，直接返回黑名单消息
             req.prompt = ""
-            req.system_prompt = "您已加入黑名单，只有重置好感才可以移出黑名单。"
-            logger.info(f"用户 {user_key} 在黑名单中，已拦截LLM请求")
+            req.system_prompt = "您已加入黑名单，只有管理员重置好感才可以移出黑名单。"
+            
+            # 设置一个标记，让响应处理器知道这是黑名单响应
+            setattr(req, '_blacklisted', True)
             return
         
         # 正常处理非黑名单用户
@@ -1090,15 +1170,22 @@ class EmotionAIPlugin(Star):
     
     # ==================== 修复的LLM响应处理 ====================
     
-    @filter.on_llm_response()
+    @filter.on_llm_response(priority=999)
     async def process_emotional_update(self, event: AstrMessageEvent, resp: LLMResponse):
         """处理情感更新 - 修复黑名单用户处理"""
         user_key = self._get_user_key(event)
         
+        # 检查是否是黑名单响应
+        request = getattr(resp, '_request', None)
+        if request and hasattr(request, '_blacklisted'):
+            resp.completion_text = "【黑名单】您已加入黑名单，只有管理员重置好感才可以移出黑名单。"
+            logger.info(f"LLM响应拦截：用户 {user_key} 在黑名单中，已覆盖LLM响应")
+            return
+            
         # 再次检查黑名单状态（防止在情感更新过程中被加入黑名单）
         if await self.blacklist_manager.is_user_blacklisted(user_key):
-            resp.completion_text = "您已加入黑名单，只有重置好感才可以移出黑名单。"
-            logger.info(f"用户 {user_key} 在黑名单中，已覆盖LLM响应")
+            resp.completion_text = "【黑名单】您已加入黑名单，只有管理员重置好感才可以移出黑名单。"
+            logger.info(f"LLM响应拦截：用户 {user_key} 在黑名单中，已覆盖LLM响应")
             return
             
         original_text = resp.completion_text
@@ -1124,7 +1211,7 @@ class EmotionAIPlugin(Star):
                 self._get_session_id(event)
             )
             # 立即更新响应为黑名单消息
-            resp.completion_text = "您已加入黑名单，只有重置好感才可以移出黑名单。"
+            resp.completion_text = "【黑名单】您已加入黑名单，只有管理员重置好感才可以移出黑名单。"
         
         # 保存状态（只有在没有进入黑名单的情况下）
         if not await self.blacklist_manager.is_user_blacklisted(user_key):
@@ -1207,42 +1294,50 @@ class EmotionAIPlugin(Star):
                 state.positive_interactions += 1
             elif negative_emotions > positive_emotions:
                 state.negative_interactions += 1
+        else:
+            # 如果没有情感更新，认为是中性互动
+            pass
         
         # 更新关系状态
         state.relationship = self._calculate_relationship_level(state)
-        
-    # ==================== 用户命令 - 简化委托方式 ====================
     
-    @filter.command("好感度")
+    # ==================== 用户命令 ====================
+    
+    @filter.command("好感度", priority=5)
     async def show_emotional_state(self, event: AstrMessageEvent):
         """显示情感状态"""
-        return self.user_commands.show_emotional_state(event)
+        async for result in self.user_commands.show_emotional_state(event):
+            yield result
         
-    @filter.command("状态显示")
+    @filter.command("状态显示", priority=5)
     async def toggle_status_display(self, event: AstrMessageEvent):
         """切换状态显示开关"""
-        return self.user_commands.toggle_status_display(event)
+        async for result in self.user_commands.toggle_status_display(event):
+            yield result
         
-    # ==================== 排行榜命令 - 简化委托方式 ====================
+    # ==================== 排行榜命令 ====================
     
-    @filter.command("好感排行")
+    @filter.command("好感排行", priority=5)
     async def show_favor_ranking(self, event: AstrMessageEvent, num: str = "10"):
         """显示好感度排行榜"""
-        return self.user_commands.show_favor_ranking(event, num)
+        async for result in self.user_commands.show_favor_ranking(event, num):
+            yield result
         
-    @filter.command("负好感排行")
+    @filter.command("负好感排行", priority=5)
     async def show_negative_favor_ranking(self, event: AstrMessageEvent, num: str = "10"):
         """显示负好感排行榜"""
-        return self.user_commands.show_negative_favor_ranking(event, num)
+        async for result in self.user_commands.show_negative_favor_ranking(event, num):
+            yield result
         
-    # ==================== 新增命令 - 简化委托方式 ====================
+    # ==================== 新增命令 ====================
     
-    @filter.command("情感分析")
+    @filter.command("情感分析", priority=5)
     async def analyze_emotion(self, event: AstrMessageEvent, text: str = ""):
         """分析文本情感"""
-        return self.user_commands.analyze_emotion(event, text)
+        async for result in self.user_commands.analyze_emotion(event, text):
+            yield result
         
-    @filter.command("缓存统计")
+    @filter.command("缓存统计", priority=5)
     async def show_cache_stats(self, event: AstrMessageEvent):
         """显示缓存统计信息"""
         stats = await self.cache.get_stats()
@@ -1259,42 +1354,49 @@ class EmotionAIPlugin(Star):
         ]
         
         yield event.plain_result("\n".join(response))
+        event.stop_event()
         
-    # ==================== 管理员命令 - 简化委托方式 ====================
+    # ==================== 管理员命令 ====================
     
     def _is_admin(self, event: AstrMessageEvent) -> bool:
         """检查管理员权限"""
         return event.role == "admin" or event.get_sender_id() in self.admin_qq_list
         
-    @filter.command("设置好感")
+    @filter.command("设置好感", priority=5)
     async def admin_set_favor(self, event: AstrMessageEvent, user_input: str, value: str):
         """设置好感度"""
-        return self.admin_commands.set_favor(event, user_input, value)
+        async for result in self.admin_commands.set_favor(event, user_input, value):
+            yield result
         
-    @filter.command("重置好感")
+    @filter.command("重置好感", priority=5)
     async def admin_reset_favor(self, event: AstrMessageEvent, user_input: str):
         """重置用户好感度状态"""
-        return self.admin_commands.reset_favor(event, user_input)
+        async for result in self.admin_commands.reset_favor(event, user_input):
+            yield result
         
-    @filter.command("重置插件")
+    @filter.command("重置插件", priority=5)
     async def admin_reset_plugin(self, event: AstrMessageEvent):
         """重置插件所有数据"""
-        return self.admin_commands.reset_plugin(event)
+        async for result in self.admin_commands.reset_plugin(event):
+            yield result
         
-    @filter.command("黑名单统计")
+    @filter.command("黑名单统计", priority=5)
     async def admin_blacklist_stats(self, event: AstrMessageEvent):
         """显示黑名单统计"""
-        return self.admin_commands.blacklist_stats(event)
+        async for result in self.admin_commands.blacklist_stats(event):
+            yield result
     
-    @filter.command("查看好感")
+    @filter.command("查看好感", priority=5)
     async def admin_view_favor(self, event: AstrMessageEvent, user_input: str):
         """管理员查看指定用户的好感状态"""
-        return self.admin_commands.view_favor(event, user_input)
+        async for result in self.admin_commands.view_favor(event, user_input):
+            yield result
         
-    @filter.command("备份数据")
+    @filter.command("备份数据", priority=5)
     async def admin_backup_data(self, event: AstrMessageEvent):
         """备份插件数据"""
-        return self.admin_commands.backup_data(event)
+        async for result in self.admin_commands.backup_data(event):
+            yield result
             
     def _create_backup(self) -> str:
         """创建数据备份"""
