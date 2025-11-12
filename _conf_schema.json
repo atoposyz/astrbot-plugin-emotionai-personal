@@ -9,7 +9,7 @@
         "description": "好感度最小值",
         "type": "int",
         "default": -100,
-        "hint": "设置好感度的最低值，达到此值将加入黑名单"
+        "hint": "设置好感度的最低值"
     },
     "favour_max": {
         "description": "好感度最大值",
