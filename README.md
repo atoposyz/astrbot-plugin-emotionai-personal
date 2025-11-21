@@ -1,6 +1,9 @@
 <div align="center">
 
-![:name](https://count.getloli.com/@astrbot_plugin_emotionai?name=astrbot_plugin_emotionai&theme=minecraft&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
+  <img src="./logo.png" width="200" height="200" alt="EmotionAI Logo">
+  <br>
+
+  ![:name](https://count.getloli.com/@astrbot_plugin_emotionai?name=astrbot_plugin_emotionai&theme=minecraft&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
 
 # EmotionAI (情感智能)
 
