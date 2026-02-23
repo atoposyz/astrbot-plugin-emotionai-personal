@@ -1,4 +1,5 @@
 import json
+import ast
 import re
 import time
 import shutil
@@ -759,6 +760,42 @@ class EmotionAIPlugin(Star):
 
     # ==================== 核心逻辑 ====================
     
+    def _extract_text_from_payload(self, payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, list):
+            texts = [self._extract_text_from_payload(item) for item in payload]
+            return "".join(t for t in texts if t)
+        if isinstance(payload, dict):
+            if isinstance(payload.get("text"), str):
+                return payload["text"]
+            if "content" in payload:
+                return self._extract_text_from_payload(payload["content"])
+            if isinstance(payload.get("parts"), list):
+                return self._extract_text_from_payload(payload["parts"])
+        return ""
+
+    def _normalize_visible_text(self, text: str) -> str:
+        stripped = text.strip()
+        if not stripped:
+            return ""
+
+        is_container = (stripped.startswith("[") and stripped.endswith("]")) or (stripped.startswith("{") and stripped.endswith("}"))
+        if not is_container:
+            return text
+
+        parsed = None
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(stripped)
+            except Exception:
+                return text
+
+        extracted = self._extract_text_from_payload(parsed).strip()
+        return extracted if extracted else text
+
     def _is_admin(self, event: AstrMessageEvent) -> bool:
         """检查是否为管理员"""
         return event.role == "admin" or event.get_sender_id() in self.admin_qq_list
@@ -976,7 +1013,7 @@ FORMAT:
     async def process_emotional_update(self, event: AstrMessageEvent, resp: LLMResponse):
         user_key = self._get_user_key(event)
         state = await self.user_manager.get_user_state(user_key)
-        orig_text = resp.completion_text
+        orig_text = str(resp.completion_text or "")
         
         # [调试] 打印 LLM 的完整输出
         logger.info(f"[EmotionAI DEBUG] LLM 完整输出:\n{orig_text}")
@@ -1035,7 +1072,8 @@ FORMAT:
         if not state.show_thought:
             orig_text = thought_pattern.sub("", orig_text)
         
-        resp.completion_text = orig_text.strip()
+        resp.completion_text = self._normalize_visible_text(orig_text).strip()
+        logger.info(f"[EmotionAI DEBUG] 清洗后最终发送文本:\n{resp.completion_text}")
         
         if updates:
             logger.info(f"[EmotionAI] 最终捕获的情感变更: {updates}")
