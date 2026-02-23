@@ -242,14 +242,25 @@ class RankingManager:
         self.user_state_manager = user_state_manager
         self.cache = TTLCache(default_ttl=60, max_size=10)
     
-    async def get_average_ranking(self, limit: int = 10, reverse: bool = True) -> List[RankingEntry]:
-        cache_key = f"ranking_{limit}_{reverse}"
+    async def get_average_ranking(self, limit: int = 10, reverse: bool = True, origin: Optional[str] = None) -> List[RankingEntry]:
+        """
+        获取排行榜。
+        :param limit: 限制条数
+        :param reverse: 是否倒序（True则从高到低）
+        :param origin: 如果指定，仅返回该来源的排行；否则返回所有来源
+        """
+        cache_key = f"ranking_{limit}_{reverse}_{origin or 'all'}"
         cached_result = await self.cache.get(cache_key)
         if cached_result: return cached_result
         
         averages = []
         async with self.user_state_manager.lock:
             for user_key, data in self.user_state_manager.user_data.items():
+                # 如果指定了origin，过滤只包含该来源的用户
+                if origin:
+                    if not user_key.startswith(f"{origin}_"):
+                        continue
+                
                 state = EmotionalState.from_dict(data)
                 avg = (state.favor + state.intimacy) / 2
                 averages.append((user_key, avg, state.favor, state.intimacy))
@@ -263,9 +274,30 @@ class RankingManager:
         return entries
     
     def _format_user_display(self, user_key: str) -> str:
+        """
+        格式化用户显示。
+        根据用户键格式推断群聊阶段中的用户、纯用户ID或万能类型。
+        输出示例：
+        - qq_12345 -> QQ(12345)
+        - wechat_67890 -> 微信(67890)
+        - 12345 -> 用户1234 (旧格式兼容)
+        """
         if '_' in user_key:
-            try: return f"用户{user_key.split('_', 1)[1]}"
-            except ValueError: pass
+            try:
+                origin, uid = user_key.split('_', 1)
+                # 根据origin作为来源类型来格式化
+                origin_map = {
+                    "qq": "QQ",
+                    "wechat": "微信",
+                    "email": "Email",
+                    "web": "Web",
+                    "telegram": "Telegram",
+                    "discord": "Discord"
+                }
+                origin_name = origin_map.get(origin.lower(), origin)
+                return f"{origin_name}({uid})"
+            except Exception:
+                pass
         return f"用户{user_key}"
     
     async def get_global_stats(self) -> Dict[str, Any]:
@@ -397,27 +429,35 @@ class UserCommandHandler:
         event.stop_event()
     
     async def show_favor_ranking(self, event: AstrMessageEvent, num: str = "10"):
+        """显示当前群聊的好感度排行"""
         try: limit = max(1, min(int(num), 20))
         except ValueError: limit = 10
-        rankings = await self.plugin.ranking_manager.get_average_ranking(limit, True)
+        
+        # 获取当前群聊来源
+        origin = event.unified_msg_origin or "unknown"
+        
+        rankings = await self.plugin.ranking_manager.get_average_ranking(limit, True, origin=origin)
         if not rankings:
-            yield event.plain_result("【排行榜】暂无数据")
+            yield event.plain_result(f"【{origin} 好感度排行】暂无数据")
             event.stop_event()
             return
-        lines = [f"【好感度 TOP {limit}】", "="*18]
+        lines = [f"【{origin} 好感度 TOP {limit}】", "="*20]
         for e in rankings:
             trend = "↑" if e.average_score > 0 else "↓"
             lines.append(f"{e.rank}. {e.display_name}\n   均值: {e.average_score:.1f} {trend} (好感 {e.favor}|亲密 {e.intimacy})")
-        stats = await self.plugin.ranking_manager.get_global_stats()
-        lines.extend(["", "【全服统计】", f"用户: {stats['total_users']} | 黑名单: {stats['blacklisted_count']}", f"互动: {stats['total_interactions']}"])
         yield event.plain_result("\n".join(lines))
         event.stop_event()
     
     async def show_negative_favor_ranking(self, event: AstrMessageEvent, num: str = "10"):
+        """显示当前群聊的负好感度排行"""
         try: limit = max(1, min(int(num), 20))
         except ValueError: limit = 10
-        rankings = await self.plugin.ranking_manager.get_average_ranking(limit, False)
-        lines = [f"【好感度 BOTTOM {limit}】", "="*18]
+        
+        # 获取当前群聊来源
+        origin = event.unified_msg_origin or "unknown"
+        
+        rankings = await self.plugin.ranking_manager.get_average_ranking(limit, False, origin=origin)
+        lines = [f"【{origin} 好感度 BOTTOM {limit}】", "="*20]
         for e in rankings:
             lines.append(f"{e.rank}. {e.display_name}\n   均值: {e.average_score:.1f} (好感 {e.favor}|亲密 {e.intimacy})")
         yield event.plain_result("\n".join(lines))
@@ -441,9 +481,32 @@ class AdminCommandHandler:
         self.plugin = plugin
     
     def _resolve_user_key(self, user_input: str) -> str:
-        if self.plugin.session_based and '_' not in user_input:
-            for k in self.plugin.user_manager.user_data:
-                if k.endswith(f"_{user_input}"): return k
+        """
+        解析管理员命令中的用户指定。
+        支持三种输入格式：
+        1. origin_uid - 完整的用户键
+        2. uid - 自动搜索（当session_based=True时会找所有匹配）
+        3. origin@uid - 简洁格式，转换为origin_uid
+        """
+        # 格式3转换：origin@uid -> origin_uid
+        if '@' in user_input:
+            parts = user_input.split('@')
+            if len(parts) == 2:
+                return f"{parts[0]}_{parts[1]}"
+        
+        # 如果已是完整键格式（包含来源分隔符），直接返回
+        if '_' in user_input:
+            return user_input
+        
+        # 如果启用了session_based，尝试找到匹配的用户
+        if self.plugin.session_based:
+            matches = [k for k in self.plugin.user_manager.user_data if k.endswith(f"_{user_input}")]
+            if len(matches) == 1:
+                return matches[0]
+            elif len(matches) > 1:
+                # 多个匹配，返回所有匹配列表供管理员选择
+                raise ValueError(f"找到多个匹配用户：{matches}，请使用 origin_uid 或 origin@uid 格式指定")
+        
         return user_input
     
     async def set_emotion(self, event: AstrMessageEvent, user_input: str, dimension: str, value: str):
@@ -475,7 +538,13 @@ class AdminCommandHandler:
             event.stop_event()
             return
 
-        user_key = self._resolve_user_key(user_input)
+        try:
+            user_key = self._resolve_user_key(user_input)
+        except ValueError as e:
+            yield event.plain_result(f"【错误】{str(e)}\n\n用法示例：\n/设置情感 origin_uid 好感 10\n或\n/设置情感 群聊@123456 好感 10")
+            event.stop_event()
+            return
+        
         state = await self.plugin.user_manager.get_user_state(user_key)
         setattr(state, target_key, val)
         if target_key == "favor" and val > self.plugin.favour_min: state.is_blacklisted = False
@@ -485,8 +554,18 @@ class AdminCommandHandler:
         event.stop_event()
     
     async def reset_favor(self, event: AstrMessageEvent, user_input: str):
-        if not self.plugin._is_admin(event): return
-        user_key = self._resolve_user_key(user_input)
+        if not self.plugin._is_admin(event):
+            yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
+            return
+        
+        try:
+            user_key = self._resolve_user_key(user_input)
+        except ValueError as e:
+            yield event.plain_result(f"【错误】{str(e)}")
+            event.stop_event()
+            return
+        
         new_state = EmotionalState()
         new_state.is_blacklisted = False
         
@@ -495,19 +574,82 @@ class AdminCommandHandler:
         event.stop_event()
     
     async def view_favor(self, event: AstrMessageEvent, user_input: str):
-        if not self.plugin._is_admin(event): return
-        user_key = self._resolve_user_key(user_input)
+        if not self.plugin._is_admin(event):
+            yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
+            return
+        
+        try:
+            user_key = self._resolve_user_key(user_input)
+        except ValueError as e:
+            yield event.plain_result(f"【错误】{str(e)}")
+            event.stop_event()
+            return
+        
         state = await self.plugin.user_manager.get_user_state(user_key)
         yield event.plain_result(self.plugin._format_emotional_state(state))
         event.stop_event()
     
     async def backup_data(self, event: AstrMessageEvent):
-        if not self.plugin._is_admin(event): return
+        if not self.plugin._is_admin(event):
+            yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
+            return
         try:
             path = self.plugin._create_backup()
             yield event.plain_result(f"【成功】备份至: {path}")
         except Exception as e:
             yield event.plain_result(f"【错误】{str(e)}")
+        event.stop_event()
+    
+    async def show_global_ranking(self, event: AstrMessageEvent, num: str = "10"):
+        """显示全部群聊的总好感度排行（管理员命令）"""
+        if not self.plugin._is_admin(event):
+            yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
+            return
+        
+        try: limit = max(1, min(int(num), 50))
+        except ValueError: limit = 20
+        
+        rankings = await self.plugin.ranking_manager.get_average_ranking(limit, True, origin=None)
+        if not rankings:
+            yield event.plain_result("【总排行】暂无数据")
+            event.stop_event()
+            return
+        
+        lines = [f"【好感度总排行 TOP {limit}】", "="*20]
+        for e in rankings:
+            trend = "↑" if e.average_score > 0 else "↓"
+            lines.append(f"{e.rank}. {e.display_name}\n   均值: {e.average_score:.1f} {trend} (好感 {e.favor}|亲密 {e.intimacy})")
+        
+        stats = await self.plugin.ranking_manager.get_global_stats()
+        lines.extend(["", "【全服统计】", f"总用户: {stats['total_users']} | 黑名单: {stats['blacklisted_count']}", f"总互动: {stats['total_interactions']}"])
+        
+        yield event.plain_result("\n".join(lines))
+        event.stop_event()
+    
+    async def show_global_negative_ranking(self, event: AstrMessageEvent, num: str = "10"):
+        """显示全部群聊的总负好感度排行（管理员命令）"""
+        if not self.plugin._is_admin(event):
+            yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
+            return
+        
+        try: limit = max(1, min(int(num), 50))
+        except ValueError: limit = 20
+        
+        rankings = await self.plugin.ranking_manager.get_average_ranking(limit, False, origin=None)
+        if not rankings:
+            yield event.plain_result("【负总排行】暂无数据")
+            event.stop_event()
+            return
+        
+        lines = [f"【好感度总排行 BOTTOM {limit}】", "="*20]
+        for e in rankings:
+            lines.append(f"{e.rank}. {e.display_name}\n   均值: {e.average_score:.1f} (好感 {e.favor}|亲密 {e.intimacy})")
+        
+        yield event.plain_result("\n".join(lines))
         event.stop_event()
 
 
@@ -547,7 +689,8 @@ class EmotionAIPlugin(Star):
         logger.info("EmotionAI v3.4 (Cognitive Resonance Engine) Loaded")
         
     def _validate_and_init_config(self):
-        self.session_based = bool(self.config.get("session_based", False))
+        # 改进：始终使用群聊隔离（防止多群聊用户混淆）
+        self.session_based = bool(self.config.get("session_based", True))
         self.favour_min = self.config.get("favour_min", -100)
         self.favour_max = self.config.get("favour_max", 100)
         if self.favour_max <= self.favour_min: self.favour_min, self.favour_max = -100, 100
@@ -567,8 +710,15 @@ class EmotionAIPlugin(Star):
             except Exception as e: logger.error(f"Auto-save failed: {e}")
                 
     def _get_user_key(self, event: AstrMessageEvent) -> str:
+        """
+        生成用户唯一标识。包含群聊来源，实现多群聊隔离。
+        格式: origin_uid or uid (根据session_based配置)
+        """
         uid = event.get_sender_id()
-        return f"{event.unified_msg_origin}_{uid}" if self.session_based else uid
+        if self.session_based:
+            origin = event.unified_msg_origin or "unknown"
+            return f"{origin}_{uid}"
+        return uid
     
     def _format_emotional_state(self, state: EmotionalState) -> str:
         p = self.analyzer.get_emotional_profile(state)
@@ -728,14 +878,13 @@ FORMAT:
         
         req.contexts.append({
             "role": "assistant",
-            # 已修正：闭合标签改为 </thought>，原代码中是 <thought>
             "content": """<thought>
 [感知] 收到系统自检指令。
 [评估] 当前运行平稳，心情平静。
 [决策] 输出标准状态报告。
 [更新] joy:0
 </thought>
-报告前辈，星绘的情感核心运转正常，随时准备为您服务。"""
+情感核心运转正常，随时准备为您服务。"""
         })
 
         # 4. 【核心修改】以 System 身份独立注入强制指令
@@ -990,6 +1139,14 @@ FORMAT:
     @event_filter.command("备份数据", priority=5)
     async def cmd_backup(self, event: AstrMessageEvent):
         async for r in self.admin_commands.backup_data(event): yield r
+
+    @event_filter.command("好感总排行", priority=5)
+    async def cmd_global_rank(self, event: AstrMessageEvent, num: str = "10"):
+        async for r in self.admin_commands.show_global_ranking(event, num): yield r
+
+    @event_filter.command("负好感总排行", priority=5)
+    async def cmd_global_bad_rank(self, event: AstrMessageEvent, num: str = "10"):
+        async for r in self.admin_commands.show_global_negative_ranking(event, num): yield r
 
     async def terminate(self):
         if hasattr(self, 'auto_save_task'): self.auto_save_task.cancel()
