@@ -1,8 +1,8 @@
-name: astrbot_plugin_emotionai
+name: astrbot_plugin_emotionai_personal
 version: v3.4.5
-author: 腾天
-desc: EmotionAI v3.4 搭载了全新的“认知共鸣引擎” (Cognitive Resonance Engine)。利用思维链 (CoT) 技术，让 AI 在回复前进行拟人化的心理活动推理，实现真正的情感代谢与自主决策。
-repo: https://github.com/tengtian3/astrbot-plugin-emotionai
+author: 腾天, toposyz
+desc: EmotionAI v3.4.5 个人版 - 基于情感AI引擎的个性化情感系统插件，支持多维度情感状态管理、动态情感反馈和全服好感度排行榜，适用于各种聊天场景。
+repo: https://github.com/atoposyz/astrbot-plugin-emotionai-personal
 help: |
   可用命令:
   - /好感度 - 查看当前情感状态面板
